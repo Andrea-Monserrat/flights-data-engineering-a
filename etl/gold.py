@@ -14,44 +14,39 @@ GOLD_DB = "flights_gold"
 GOLD_TABLE = "vuelos_analitica"
 
 CTAS_SQL = """
-CREATE TABLE flights_gold.vuelos_analitica AS (
-    SELECT
-        f.year,
-        f.month,
-        f.day,
-        f.origin_airport,
-        ap_orig.airport AS origin_airport_name,
-        ap_orig.city    AS origin_city,
-        ap_orig.state   AS origin_state,
-        f.destination_airport,
-        ap_dest.airport AS destination_airport_name,
-        al.airline      AS airline_name,
-        f.departure_delay,
-        f.arrival_delay,
-        f.cancelled,
-        f.cancellation_reason,
-        f.distance,
-        f.air_system_delay,
-        f.airline_delay,
-        f.weather_delay,
-        f.late_aircraft_delay,
-        f.security_delay
-    FROM flights_bronze.flights f
-    LEFT JOIN flights_bronze.airlines al
-        ON f.airline = al.iata_code
-    LEFT JOIN flights_bronze.airports ap_orig
-        ON f.origin_airport = ap_orig.iata_code
-    LEFT JOIN flights_bronze.airports ap_dest
-        ON f.destination_airport = ap_dest.iata_code
-)
+CREATE TABLE flights_gold.vuelos_analitica AS
+SELECT
+    f.year,
+    f.month,
+    f.day,
+    f.origin_airport,
+    ap_orig.airport AS origin_airport_name,
+    ap_orig.city AS origin_city,
+    ap_orig.state AS origin_state,
+    f.destination_airport,
+    ap_dest.airport AS destination_airport_name,
+    al.airline AS airline_name,
+    f.departure_delay,
+    f.arrival_delay,
+    f.cancelled,
+    f.cancellation_reason,
+    f.distance,
+    f.air_system_delay,
+    f.airline_delay,
+    f.weather_delay,
+    f.late_aircraft_delay,
+    f.security_delay
+FROM flights_bronze.flights f
+LEFT JOIN flights_bronze.airlines al
+    ON f.airline = al.iata_code
+LEFT JOIN flights_bronze.airports ap_orig
+    ON f.origin_airport = ap_orig.iata_code
+LEFT JOIN flights_bronze.airports ap_dest
+    ON f.destination_airport = ap_dest.iata_code
 """
 
 
 def setup(bucket: str) -> None:
-    """
-    Crea la base de datos flights_gold y elimina la tabla si ya existe.
-    Garantiza idempotencia: se puede correr múltiples veces sin error.
-    """
     try:
         logger.info("Creando base de datos %s en Glue (si no existe)...", GOLD_DB)
         wr.catalog.create_database(GOLD_DB, exist_ok=True)
@@ -70,10 +65,6 @@ def setup(bucket: str) -> None:
 
 
 def build_gold(bucket: str) -> None:
-    """
-    Ejecuta el CTAS en Athena para construir vuelos_analitica.
-    Une flights con los catálogos de aerolíneas y aeropuertos.
-    """
     s3_output = f"s3://{bucket}/athena-results/"
 
     try:
@@ -98,9 +89,6 @@ def build_gold(bucket: str) -> None:
 
 
 def verify(bucket: str) -> None:
-    """
-    Verifica que la tabla existe y tiene datos con un SELECT LIMIT 5.
-    """
     s3_output = f"s3://{bucket}/athena-results/"
 
     try:
@@ -115,6 +103,9 @@ def verify(bucket: str) -> None:
 
         assert df is not None, f"{GOLD_TABLE}: el resultado es None"
         assert not df.empty, f"{GOLD_TABLE}: la tabla está vacía"
+        assert "airline_name" in df.columns, "Falta la columna airline_name"
+        assert "origin_airport_name" in df.columns, "Falta la columna origin_airport_name"
+        assert "destination_airport_name" in df.columns, "Falta la columna destination_airport_name"
 
         logger.info(
             "Verificación exitosa — %d filas de muestra obtenidas — columnas: %s",
