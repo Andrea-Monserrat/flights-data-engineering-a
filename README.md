@@ -154,9 +154,11 @@ python etl/postgres_etl.py \
 
 | Paso | Screenshot |
 |------|------------|
-| Glue — `flights_bronze` con 3 tablas | `img/glue_data_bronze.png` |
-| Glue — `flights_silver` con 3 tablas | *(pendiente)* |
-| Athena — `SELECT * FROM flights_gold.vuelos_analitica LIMIT 5` | *(pendiente)* |
+| Glue — `flights_bronze` con 3 tablas | `img/glue_data_bronze(2).png` |
+| Glue — `flights_silver` con 3 tablas | `img/glue_data_silver(3).png` |
+| Glue — `flights_silver` con particiones correctas | `img/glue_data_silver_partitions(4).png` |
+| Glue — `flights_gold` con tabla de vuelos analitica | `img/glue_data_gold(5).png` |
+| Athena — `SELECT * FROM flights_gold.vuelos_analitica LIMIT 5` | `img/glue_data_vuelos_analitica(6).png` |
 | CloudFormation — stack `CREATE_COMPLETE` | *(pendiente)* |
 | DBeaver — `SELECT COUNT(*)` por tabla | *(pendiente)* |
 
