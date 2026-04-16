@@ -16,56 +16,31 @@ SILVER_DB = "flights_silver"
 
 
 def extract(bucket: str) -> pd.DataFrame:
-    """
-    Lee flights_bronze.flights desde S3 en formato Parquet.
-    """
     ruta_s3 = f"s3://{bucket}/flights/bronze/flights/"
 
     try:
-        logger.info("Leyendo Bronze flights desde %s...", ruta_s3)
+        logger.info("Leyendo flights Bronze desde %s...", ruta_s3)
+        df = wr.s3.read_parquet(path=ruta_s3, dataset=True)
 
-        flights = wr.s3.read_parquet(
-            path=ruta_s3,
-            dataset=True
-        )
+        assert df is not None, "flights Bronze es None"
+        assert not df.empty, "flights Bronze está vacío"
 
-        assert flights is not None, "flights es None"
-        assert not flights.empty, "flights Bronze está vacío"
-
-        logger.info(
-            "Bronze flights leído exitosamente — %d filas — %s",
-            len(flights),
-            ruta_s3,
-        )
-
-        return flights
+        logger.info("flights Bronze leído exitosamente — %d filas — %s", len(df), ruta_s3)
+        return df
 
     except AssertionError as e:
         logger.exception("Validación fallida en extract(): %s", e)
         sys.exit(1)
     except Exception:
-        logger.exception("Error leyendo flights Bronze desde S3")
+        logger.exception("Error leyendo flights Bronze")
         sys.exit(1)
 
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normaliza nombres de columnas a mayúsculas.
-    """
+def transform(df: pd.DataFrame) -> dict:
     try:
         df = df.copy()
         df.columns = [c.upper() for c in df.columns]
-        return df
-    except Exception:
-        logger.exception("Error normalizando nombres de columnas")
-        sys.exit(1)
 
-
-def validate_input(df: pd.DataFrame) -> None:
-    """
-    Valida columnas mínimas requeridas para construir Silver.
-    """
-    try:
         required_columns = [
             "YEAR",
             "MONTH",
@@ -87,58 +62,16 @@ def validate_input(df: pd.DataFrame) -> None:
         for col in ["YEAR", "MONTH", "DAY", "AIRLINE", "ORIGIN_AIRPORT", "CANCELLED"]:
             assert df[col].notna().all(), f"La columna clave '{col}' contiene nulos"
 
-    except AssertionError as e:
-        logger.exception("Validación fallida en input Silver: %s", e)
-        sys.exit(1)
-    except Exception:
-        logger.exception("Error validando input Silver")
-        sys.exit(1)
-
-
-def prepare_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convierte columnas relevantes a numéricas para agregación.
-    """
-    try:
-        df = df.copy()
-
-        numeric_cols = [
-            "YEAR",
-            "MONTH",
-            "DAY",
-            "DEPARTURE_DELAY",
-            "ARRIVAL_DELAY",
-            "CANCELLED",
-            "WEATHER_DELAY",
-        ]
-
-        for col in numeric_cols:
+        for col in ["YEAR", "MONTH", "DAY", "DEPARTURE_DELAY", "ARRIVAL_DELAY", "CANCELLED", "WEATHER_DELAY"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # flags auxiliares
         df["IS_DELAYED"] = (df["DEPARTURE_DELAY"] > 0).astype(int)
         df["IS_CANCELLED"] = (df["CANCELLED"] == 1).astype(int)
-        df["IS_ON_TIME_ARRIVAL"] = (df["ARRIVAL_DELAY"] <= 15).astype(int)
-
-        # para excluir cancelados de promedios
         df["DEPARTURE_DELAY_VALID"] = df["DEPARTURE_DELAY"].where(df["CANCELLED"] != 1)
         df["ARRIVAL_DELAY_VALID"] = df["ARRIVAL_DELAY"].where(df["CANCELLED"] != 1)
-
-        # minutos de retraso atribuibles a clima respecto al total de minutos de salida retrasados
+        df["IS_ON_TIME_ARRIVAL"] = (df["ARRIVAL_DELAY"] <= 15).astype(int)
         df["TOTAL_DELAY_MINUTES_POSITIVE"] = df["DEPARTURE_DELAY"].clip(lower=0)
 
-        return df
-
-    except Exception:
-        logger.exception("Error preparando columnas numéricas")
-        sys.exit(1)
-
-
-def build_flights_daily(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construye flights_daily agregando por YEAR, MONTH, DAY.
-    """
-    try:
         flights_daily = (
             df.groupby(["YEAR", "MONTH", "DAY"], dropna=False)
             .agg(
@@ -151,18 +84,6 @@ def build_flights_daily(df: pd.DataFrame) -> pd.DataFrame:
             .reset_index()
         )
 
-        return flights_daily
-
-    except Exception:
-        logger.exception("Error construyendo flights_daily")
-        sys.exit(1)
-
-
-def build_flights_monthly(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construye flights_monthly agregando por MONTH y AIRLINE.
-    """
-    try:
         flights_monthly = (
             df.groupby(["MONTH", "AIRLINE"], dropna=False)
             .agg(
@@ -174,22 +95,9 @@ def build_flights_monthly(df: pd.DataFrame) -> pd.DataFrame:
             )
             .reset_index()
         )
-
         flights_monthly["on_time_pct"] = flights_monthly["on_time_pct"] * 100.0
 
-        return flights_monthly
-
-    except Exception:
-        logger.exception("Error construyendo flights_monthly")
-        sys.exit(1)
-
-
-def build_flights_by_airport(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construye flights_by_airport agregando por ORIGIN_AIRPORT.
-    """
-    try:
-        agg = (
+        flights_by_airport = (
             df.groupby(["ORIGIN_AIRPORT"], dropna=False)
             .agg(
                 total_departures=("ORIGIN_AIRPORT", "size"),
@@ -201,14 +109,11 @@ def build_flights_by_airport(df: pd.DataFrame) -> pd.DataFrame:
             )
             .reset_index()
         )
-
-        agg["pct_weather_delay"] = (
-            agg["weather_delay_minutes"] / agg["total_delay_minutes"]
+        flights_by_airport["pct_weather_delay"] = (
+            flights_by_airport["weather_delay_minutes"] / flights_by_airport["total_delay_minutes"]
         ) * 100.0
-
-        agg["pct_weather_delay"] = agg["pct_weather_delay"].fillna(0)
-
-        flights_by_airport = agg[
+        flights_by_airport["pct_weather_delay"] = flights_by_airport["pct_weather_delay"].fillna(0)
+        flights_by_airport = flights_by_airport[
             [
                 "ORIGIN_AIRPORT",
                 "total_departures",
@@ -219,17 +124,21 @@ def build_flights_by_airport(df: pd.DataFrame) -> pd.DataFrame:
             ]
         ]
 
-        return flights_by_airport
+        return {
+            "flights_daily": flights_daily,
+            "flights_monthly": flights_monthly,
+            "flights_by_airport": flights_by_airport,
+        }
 
+    except AssertionError as e:
+        logger.exception("Validación fallida en transform(): %s", e)
+        sys.exit(1)
     except Exception:
-        logger.exception("Error construyendo flights_by_airport")
+        logger.exception("Error transformando Bronze a Silver")
         sys.exit(1)
 
 
 def validate_output(df: pd.DataFrame, table_name: str) -> None:
-    """
-    Aplica validaciones con assert antes de escribir cada tabla a S3.
-    """
     try:
         assert df is not None, f"{table_name}: DataFrame es None"
         assert not df.empty, f"{table_name}: DataFrame está vacío"
@@ -267,44 +176,6 @@ def validate_output(df: pd.DataFrame, table_name: str) -> None:
         for col in expected_columns[table_name]:
             assert col in df.columns, f"{table_name}: falta la columna '{col}'"
 
-        key_columns = {
-            "flights_daily": ["YEAR", "MONTH", "DAY", "total_flights"],
-            "flights_monthly": ["MONTH", "AIRLINE", "total_flights"],
-            "flights_by_airport": ["ORIGIN_AIRPORT", "total_departures"],
-        }
-
-        for col in key_columns[table_name]:
-            assert df[col].notna().all(), f"{table_name}: '{col}' contiene nulos"
-
-        numeric_columns = {
-            "flights_daily": [
-                "YEAR",
-                "MONTH",
-                "DAY",
-                "total_flights",
-                "total_delayed",
-                "total_cancelled",
-            ],
-            "flights_monthly": [
-                "MONTH",
-                "total_flights",
-                "total_delayed",
-                "total_cancelled",
-                "on_time_pct",
-            ],
-            "flights_by_airport": [
-                "total_departures",
-                "total_delayed",
-                "total_cancelled",
-                "pct_weather_delay",
-            ],
-        }
-
-        for col in numeric_columns[table_name]:
-            assert pd.api.types.is_numeric_dtype(df[col]), (
-                f"{table_name}: '{col}' debe ser numérica"
-            )
-
     except AssertionError as e:
         logger.exception("Validación fallida antes de escribir %s: %s", table_name, e)
         sys.exit(1)
@@ -313,12 +184,18 @@ def validate_output(df: pd.DataFrame, table_name: str) -> None:
         sys.exit(1)
 
 
-def write_flights_daily(df: pd.DataFrame, bucket: str) -> None:
-    ruta_s3 = f"s3://{bucket}/flights/silver/flights_daily/"
+def load(outputs: dict, bucket: str) -> None:
+    try:
+        logger.info("Creando base de datos %s en Glue...", SILVER_DB)
+        wr.catalog.create_database(SILVER_DB, exist_ok=True)
+    except Exception:
+        logger.exception("Error creando la base de datos flights_silver")
+        sys.exit(1)
 
     try:
+        df = outputs["flights_daily"]
         validate_output(df, "flights_daily")
-
+        ruta_s3 = f"s3://{bucket}/flights/silver/flights_daily/"
         wr.s3.to_parquet(
             df=df,
             path=ruta_s3,
@@ -329,24 +206,15 @@ def write_flights_daily(df: pd.DataFrame, bucket: str) -> None:
             partition_cols=["MONTH"],
             compression="snappy",
         )
-
-        logger.info(
-            "flights_daily: subido exitosamente — %d filas — %s",
-            len(df),
-            ruta_s3,
-        )
-
+        logger.info("flights_daily: subido exitosamente — %d filas — %s", len(df), ruta_s3)
     except Exception:
         logger.exception("Error escribiendo flights_daily")
         sys.exit(1)
 
-
-def write_flights_monthly(df: pd.DataFrame, bucket: str) -> None:
-    ruta_s3 = f"s3://{bucket}/flights/silver/flights_monthly/"
-
     try:
+        df = outputs["flights_monthly"]
         validate_output(df, "flights_monthly")
-
+        ruta_s3 = f"s3://{bucket}/flights/silver/flights_monthly/"
         wr.s3.to_parquet(
             df=df,
             path=ruta_s3,
@@ -356,24 +224,15 @@ def write_flights_monthly(df: pd.DataFrame, bucket: str) -> None:
             mode="overwrite",
             compression="snappy",
         )
-
-        logger.info(
-            "flights_monthly: subido exitosamente — %d filas — %s",
-            len(df),
-            ruta_s3,
-        )
-
+        logger.info("flights_monthly: subido exitosamente — %d filas — %s", len(df), ruta_s3)
     except Exception:
         logger.exception("Error escribiendo flights_monthly")
         sys.exit(1)
 
-
-def write_flights_by_airport(df: pd.DataFrame, bucket: str) -> None:
-    ruta_s3 = f"s3://{bucket}/flights/silver/flights_by_airport/"
-
     try:
+        df = outputs["flights_by_airport"]
         validate_output(df, "flights_by_airport")
-
+        ruta_s3 = f"s3://{bucket}/flights/silver/flights_by_airport/"
         wr.s3.to_parquet(
             df=df,
             path=ruta_s3,
@@ -383,63 +242,15 @@ def write_flights_by_airport(df: pd.DataFrame, bucket: str) -> None:
             mode="overwrite",
             compression="snappy",
         )
-
-        logger.info(
-            "flights_by_airport: subido exitosamente — %d filas — %s",
-            len(df),
-            ruta_s3,
-        )
-
+        logger.info("flights_by_airport: subido exitosamente — %d filas — %s", len(df), ruta_s3)
     except Exception:
         logger.exception("Error escribiendo flights_by_airport")
         sys.exit(1)
 
 
-def load(outputs: dict, bucket: str) -> None:
-    """
-    Crea flights_silver y escribe las tres tablas.
-    """
-    try:
-        logger.info("Creando base de datos %s en Glue...", SILVER_DB)
-        wr.catalog.create_database(SILVER_DB, exist_ok=True)
-    except Exception:
-        logger.exception("Error creando la base de datos flights_silver")
-        sys.exit(1)
-
-    write_flights_daily(outputs["flights_daily"], bucket)
-    write_flights_monthly(outputs["flights_monthly"], bucket)
-    write_flights_by_airport(outputs["flights_by_airport"], bucket)
-
-
-def transform(flights: pd.DataFrame) -> dict:
-    """
-    Transforma Bronze y construye las tres tablas Silver.
-    """
-    try:
-        flights = normalize_columns(flights)
-        validate_input(flights)
-        flights = prepare_numeric_columns(flights)
-
-        flights_daily = build_flights_daily(flights)
-        flights_monthly = build_flights_monthly(flights)
-        flights_by_airport = build_flights_by_airport(flights)
-
-        return {
-            "flights_daily": flights_daily,
-            "flights_monthly": flights_monthly,
-            "flights_by_airport": flights_by_airport,
-        }
-
-    except Exception:
-        logger.exception("Error transformando Bronze a Silver")
-        sys.exit(1)
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Transforma flights Bronze a Silver en Parquet + Snappy y registra tablas en Glue."
-    )
-    parser.add_argument("--bucket", required=True, help="Nombre del bucket S3")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bucket", required=True)
     args = parser.parse_args()
 
     flights = extract(args.bucket)
